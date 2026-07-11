@@ -123,6 +123,31 @@ def main() -> int:
         ok = False
         print(f"[FALLO] el stop-loss no generó salidas anticipadas (n_stops={n_stops})")
 
+    # (6) acumulador: fusión sin duplicados + ciclo CSV -> recarga -> fusión
+    import tempfile
+    cfg0 = study.Config()
+    ventana1 = study.download_data(cfg0)  # yf está parcheado: usa 'raw'
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "hist.csv"
+        ventana1.to_csv(p, index_label="datetime")
+        recargada = study.load_csv_data(cfg0, str(p))
+        # segunda ventana: mismos datos + un día extra nuevo (posterior al rango)
+        next_day = recargada.index.max().normalize() + pd.Timedelta(days=5)
+        while next_day.weekday() >= 5:  # asegura día laborable
+            next_day += pd.Timedelta(days=1)
+        extra = make_session(next_day.date())
+        ventana2 = study.normalize_frame(
+            pd.concat([recargada, extra]).sort_index(), cfg0, assume_tz="Europe/Madrid"
+        )
+        fusion = study.merge_candles(recargada, ventana2)
+        sin_dup = not fusion.index.duplicated().any()
+        crece = len(fusion) > len(recargada)
+        if sin_dup and crece:
+            print(f"[OK] acumulador: {len(recargada)} -> {len(fusion)} velas, sin duplicados")
+        else:
+            ok = False
+            print(f"[FALLO] acumulador: dup={not sin_dup}, crece={crece}")
+
     print("\nRESULTADO:", "TODAS LAS COMPROBACIONES PASAN" if ok else "HAY FALLOS")
     return 0 if ok else 1
 

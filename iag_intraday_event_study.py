@@ -175,6 +175,18 @@ def load_csv_data(cfg: Config, csv_path: str) -> pd.DataFrame:
     return normalize_frame(df, cfg, assume_tz=cfg.timezone)
 
 
+def merge_candles(existing: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+    """Fusiona dos conjuntos de velas por su índice temporal.
+
+    En caso de solaparse una misma marca de tiempo, se conserva la fila más
+    reciente (la de `new`). Sirve para acumular historia intradía ejecutando
+    la descarga periódicamente (yfinance solo ofrece ~60 días de velas 5m).
+    """
+    combined = pd.concat([existing, new])
+    combined = combined[~combined.index.duplicated(keep="last")]
+    return combined.sort_index()
+
+
 def split_complete_sessions(df: pd.DataFrame, cfg: Config) -> dict[pd.Timestamp, pd.DataFrame]:
     sessions: dict[pd.Timestamp, pd.DataFrame] = {}
     min_end = parse_clock(cfg.min_complete_time)

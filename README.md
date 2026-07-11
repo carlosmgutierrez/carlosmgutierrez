@@ -8,7 +8,8 @@ matinal, ¿tiende el valor a caer hasta el cierre? Posición **corta**, velas de
 | Fichero | Descripción |
 |---------|-------------|
 | `iag_intraday_event_study.py` | Estudio de eventos: descarga, señal sin look-ahead, entrada/salida, estadística y figuras. |
-| `INSTRUCCIONES_IAG_INTRADIA.txt` | Instrucciones de uso originales. |
+| `fetch_iag_data.py` | Acumulador incremental: descarga los ~60 días de Yahoo y los fusiona sin duplicar en un CSV creciente. |
+| `INSTRUCCIONES_IAG_INTRADIA.txt` | Instrucciones de uso. |
 | `VALORACION.md` | **Informe de valoración** de la estrategia (fortalezas, debilidades y recomendaciones). |
 | `tests/synthetic_check.py` | Verificación de la lógica con datos sintéticos (no necesita red). |
 | `requirements.txt` | Dependencias. |
@@ -23,6 +24,19 @@ python tests/synthetic_check.py                    # comprueba la lógica sin re
 ```
 
 Los resultados se guardan en `iag_intraday_results/` (CSV + PNG).
+
+### Conseguir historia intradía
+
+Yahoo solo da ~60 días de velas de 5 min. Para acumular más historia, ejecuta el acumulador
+periódicamente (p. ej. semanalmente); fusiona la ventana rodante en un CSV creciente sin duplicar:
+
+```bash
+python fetch_iag_data.py            # crea/actualiza iag_history_5m.csv
+python iag_intraday_event_study.py --csv iag_history_5m.csv
+```
+
+Para años de una vez necesitarás un feed de pago o el export de tu bróker (intradía multi-año
+de acciones no es gratis); una vez tengas el CSV, `--csv` lo procesa igual.
 
 ### Opciones principales
 

@@ -1,0 +1,10 @@
+# Resultados generados
+iag_intraday_results/
+*.png
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

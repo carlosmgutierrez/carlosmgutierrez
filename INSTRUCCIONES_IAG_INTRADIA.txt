@@ -1,0 +1,54 @@
+ESTUDIO INTRADÍA DE IAG EN BME
+==============================
+
+1. Instala las dependencias:
+
+   python -m pip install yfinance pandas numpy matplotlib
+
+2. Ejecuta:
+
+   python iag_intraday_event_study.py
+
+3. El programa descargará IAG.MC en velas de 5 minutos y creará la carpeta:
+
+   iag_intraday_results/
+
+   con estos resultados:
+
+   - iag_5min_raw.csv
+     Velas descargadas.
+
+   - strategy_summary.csv
+     Resumen para umbrales de 0.5%, 1.0%, 1.5% y 2.0%; señales a
+     las 09:15, 09:30 y 10:00; salidas a las 12:00, 15:00 y 17:25.
+
+   - all_candidate_trades.csv
+     Todas las observaciones diarias, incluso días sin señal.
+
+   - default_strategy_event_days.csv
+     Días en que IAG había subido al menos un 1% a las 09:30 y se
+     simula una venta corta hasta las 17:25.
+
+   - average_intraday_paths.png
+     Trayectoria media de todos los días frente a los días señalados.
+
+   - event_return_histogram.png
+     Distribución de resultados de la estrategia principal.
+
+4. Supuesto de costes:
+
+   Por defecto resta 10 puntos básicos (0.10%) por operación completa.
+   Puedes cambiarlo, por ejemplo a 20 bps:
+
+   python iag_intraday_event_study.py --cost-bps 20
+
+5. Precauciones metodológicas:
+
+   - La señal utiliza solo velas completamente cerradas.
+   - La entrada se hace en la apertura de la vela siguiente.
+   - Se eliminan sesiones incompletas.
+   - Los últimos 60 días son solo una prueba exploratoria.
+   - Para validar la hipótesis hacen falta varios años y un periodo final
+     completamente fuera de muestra.
+   - No se modelan todavía el spread variable, la disponibilidad o el coste
+     del préstamo de acciones para posiciones cortas, ni el slippage real.

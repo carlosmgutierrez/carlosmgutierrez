@@ -17,11 +17,26 @@ matinal, ¿tiende el valor a caer hasta el cierre? Posición **corta**, velas de
 
 ```bash
 pip install -r requirements.txt
-python iag_intraday_event_study.py     # necesita acceso de red a Yahoo Finance
-python tests/synthetic_check.py        # comprueba la lógica sin red
+python iag_intraday_event_study.py                 # descarga de Yahoo (necesita red)
+python iag_intraday_event_study.py --csv datos.csv # datos propios de varios años
+python tests/synthetic_check.py                    # comprueba la lógica sin red
 ```
 
 Los resultados se guardan en `iag_intraday_results/` (CSV + PNG).
+
+### Opciones principales
+
+| Flag | Descripción |
+|------|-------------|
+| `--csv RUTA` | Usa un CSV propio (fecha-hora + OHLCV) y evita el límite de ~60 días de yfinance. |
+| `--cost-bps 10` | Comisión ida+vuelta (bps). |
+| `--spread-bps 3` | Spread bid/ask cruzado ida+vuelta (bps). |
+| `--borrow-annual-pct 3` | Coste anual del préstamo del corto (prorrateado por tiempo). |
+| `--stop-pct 1.0` | Stop-loss del corto en % en contra (0 = sin stop). |
+
+El resumen incluye además del retorno neto: **Sharpe por operación, drawdown máximo,
+profit factor**, contraste **evento vs no-evento** por permutación (`perm_pvalue`) y
+recuento de salidas por stop.
 
 > **Aviso:** 60 días de datos son solo exploratorios. Lee `VALORACION.md` antes de sacar conclusiones
 > o arriesgar capital. Esto no es asesoramiento financiero.

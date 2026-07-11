@@ -96,7 +96,24 @@ python iag_intraday_event_study.py --cost-bps 20   # coste más conservador
 python tests/synthetic_check.py                    # verificación de lógica, sin red
 ```
 
-## 7. Conclusión
+## 7. Mejoras ya aplicadas al código
+
+Sobre la versión original se han implementado (verificadas con `tests/synthetic_check.py`):
+
+| Antes | Ahora |
+|-------|-------|
+| Coste único de 10 bps | **Comisión + spread cruzado + préstamo prorrateado** (`--spread-bps`, `--borrow-annual-pct`). |
+| Sin stop; pérdida no acotada | **Stop-loss** configurable del corto (`--stop-pct`), con recuento de salidas por stop. |
+| Significación solo contra 0 | **Contraste evento vs no-evento por permutación** (`perm_pvalue`). |
+| Sin métricas de riesgo | **Sharpe por operación, drawdown máximo, profit factor**. |
+| Datos atados a yfinance (~60 días) | **Lector de CSV propio** (`--csv`) para validar con años de historia. |
+| — | Aviso explícito de multiplicidad (36 configuraciones) en la salida. |
+
+Pendiente (decisión metodológica, no de código): conseguir años de datos reales,
+**fijar una sola hipótesis de antemano**, reservar un tramo out-of-sample intocado y
+hacer *walk-forward*. El código ya está preparado para todo ello vía `--csv`.
+
+## 8. Conclusión
 
 Buen punto de partida: **infraestructura limpia, sin look-ahead y con la dirección correcta.** La barrera
 real no es el código, son los **datos (60 días es poco), el sobreajuste de 36 celdas y el realismo del

@@ -49,8 +49,12 @@ class Config:
     checkpoints: tuple[str, ...] = ("09:15", "09:30", "10:00")
     exits: tuple[str, ...] = ("12:00", "15:00", "17:25")
     thresholds_pct: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0)
-    round_trip_cost_bps: float = 10.0
+    round_trip_cost_bps: float = 10.0  # comisión ida+vuelta
+    spread_bps: float = 3.0            # spread cruzado ida+vuelta (bid/ask)
+    borrow_annual_pct: float = 3.0     # coste anual del préstamo de acciones (corto)
+    stop_loss_pct: float = 0.0         # 0 = sin stop; p. ej. 1.0 = stop al +1% en contra
     bootstrap_samples: int = 10_000
+    permutation_samples: int = 5_000
     random_seed: int = 20260711
     min_complete_time: str = "17:25"
     chart_checkpoint: str = "09:30"
@@ -110,6 +114,11 @@ def download_data(cfg: Config) -> pd.DataFrame:
         )
 
     df = flatten_yfinance_columns(df, cfg.ticker)
+    return normalize_frame(df, cfg, assume_tz="UTC")
+
+
+def normalize_frame(df: pd.DataFrame, cfg: Config, assume_tz: str) -> pd.DataFrame:
+    """Valida columnas, ajusta zona horaria y recorta al horario de sesión."""
     required = {"Open", "High", "Low", "Close", "Volume"}
     missing = required.difference(df.columns)
     if missing:
@@ -117,8 +126,7 @@ def download_data(cfg: Config) -> pd.DataFrame:
 
     idx = pd.DatetimeIndex(df.index)
     if idx.tz is None:
-        # Normalmente Yahoo devuelve índice con zona horaria; si no, asumimos UTC.
-        idx = idx.tz_localize("UTC")
+        idx = idx.tz_localize(assume_tz)
     idx = idx.tz_convert(cfg.timezone)
     df.index = idx
 
@@ -130,8 +138,41 @@ def download_data(cfg: Config) -> pd.DataFrame:
     end_t = parse_clock(cfg.session_end)
     df = df[(df.index.time >= start_t) & (df.index.time <= end_t)].copy()
     if df.empty:
-        raise RuntimeError("No quedan velas dentro del horario continuo de BME.")
+        raise RuntimeError("No quedan velas dentro del horario de sesión.")
     return df
+
+
+def load_csv_data(cfg: Config, csv_path: str) -> pd.DataFrame:
+    """Carga velas propias desde un CSV (para validar con años de historia).
+
+    Formato esperado: una columna de fecha-hora (datetime/date/time/timestamp)
+    y columnas Open, High, Low, Close, Volume (mayúsculas/minúsculas indistintas).
+    Si la fecha-hora no lleva zona horaria se asume `cfg.timezone`.
+    """
+    print(f"Cargando velas desde CSV: {csv_path} ...")
+    df = pd.read_csv(csv_path)
+    df.columns = [str(c).strip() for c in df.columns]
+    lower = {c.lower(): c for c in df.columns}
+
+    time_col = next((lower[k] for k in ("datetime", "date", "timestamp", "time") if k in lower), None)
+    if time_col is None:
+        raise RuntimeError("El CSV necesita una columna de fecha-hora (datetime/date/timestamp/time).")
+
+    try:
+        # Fechas tz-naive o con un único offset.
+        parsed = pd.to_datetime(df[time_col], errors="coerce")
+    except (ValueError, TypeError):
+        # Offsets mixtos (p. ej. por el cambio de hora): normaliza a UTC.
+        parsed = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+    df.index = pd.DatetimeIndex(parsed)
+    df = df.drop(columns=[time_col])
+    df = df[df.index.notna()]
+    if df.empty:
+        raise RuntimeError("No se pudo interpretar ninguna fecha-hora del CSV.")
+
+    df.columns = [str(c).strip().title() for c in df.columns]
+    # Si la zona horaria no viene en los datos, se asume la de la configuración.
+    return normalize_frame(df, cfg, assume_tz=cfg.timezone)
 
 
 def split_complete_sessions(df: pd.DataFrame, cfg: Config) -> dict[pd.Timestamp, pd.DataFrame]:
@@ -196,6 +237,47 @@ def bootstrap_mean_ci(
     return tuple(np.quantile(boot, [alpha / 2, 1 - alpha / 2]))  # type: ignore[return-value]
 
 
+def permutation_pvalue(
+    event: np.ndarray,
+    other: np.ndarray,
+    n_samples: int,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """Contraste evento vs no-evento por permutación de etiquetas.
+
+    Devuelve (diferencia_observada_de_medias, p_valor_bilateral). Prueba si el
+    retorno de los días señalados difiere del de los NO señalados, que es la
+    pregunta relevante, en lugar de compararlo solo contra cero.
+    """
+    event = event[np.isfinite(event)]
+    other = other[np.isfinite(other)]
+    if len(event) < 2 or len(other) < 2:
+        return math.nan, math.nan
+    obs = float(event.mean() - other.mean())
+    pooled = np.concatenate([event, other])
+    n_event = len(event)
+    diffs = np.empty(n_samples, dtype=float)
+    for i in range(n_samples):
+        perm = rng.permutation(pooled)
+        diffs[i] = perm[:n_event].mean() - perm[n_event:].mean()
+    p_value = float((np.abs(diffs) >= abs(obs) - 1e-12).mean())
+    return obs, p_value
+
+
+def equity_curve_metrics(returns_pct: np.ndarray) -> tuple[float, float]:
+    """Drawdown máximo (%) y profit factor de una serie de retornos (%) en orden."""
+    r = returns_pct[np.isfinite(returns_pct)] / 100.0
+    if len(r) == 0:
+        return math.nan, math.nan
+    equity = np.cumprod(1.0 + r)
+    peak = np.maximum.accumulate(equity)
+    max_dd = float((equity / peak - 1.0).min())
+    gains = float(r[r > 0].sum())
+    losses = float(-r[r < 0].sum())
+    profit_factor = gains / losses if losses > 0 else math.inf
+    return 100.0 * max_dd, profit_factor
+
+
 def build_trade_table(
     sessions: dict[pd.Timestamp, pd.DataFrame],
     cfg: Config,
@@ -229,12 +311,31 @@ def build_trade_table(
                 if exit_timestamp <= entry_time:
                     continue
 
+                # Stop-loss para el corto: adverso = el precio SUBE. Si en alguna
+                # vela del recorrido el High toca el nivel de stop, se sale ahí.
+                exit_reason = "time"
+                if cfg.stop_loss_pct and cfg.stop_loss_pct > 0.0:
+                    stop_price = entry_price * (1.0 + cfg.stop_loss_pct / 100.0)
+                    window = group[(group.index >= entry_time) & (group.index <= exit_timestamp)]
+                    hit = window[window["High"] >= stop_price]
+                    if not hit.empty:
+                        exit_timestamp = pd.Timestamp(hit.index[0])
+                        exit_price = stop_price
+                        exit_reason = "stop"
+
                 path = group[(group.index >= entry_time) & (group.index <= exit_timestamp)]
                 if path.empty:
                     continue
 
+                # Costes: comisión + spread cruzado + préstamo prorrateado por tiempo.
+                holding_minutes = (exit_timestamp - entry_time).total_seconds() / 60.0
+                commission = cfg.round_trip_cost_bps / 10_000.0
+                spread = cfg.spread_bps / 10_000.0
+                borrow = (cfg.borrow_annual_pct / 100.0) * (holding_minutes / 525_600.0)
+                total_cost = commission + spread + borrow
+
                 gross_short = entry_price / exit_price - 1.0
-                net_short = gross_short - cfg.round_trip_cost_bps / 10_000.0
+                net_short = gross_short - total_cost
                 # Para una posición corta: favorable = caída; adverso = subida.
                 mfe = entry_price / float(path["Low"].min()) - 1.0
                 mae = entry_price / float(path["High"].max()) - 1.0
@@ -244,6 +345,7 @@ def build_trade_table(
                         "date": session_date.date().isoformat(),
                         "checkpoint": checkpoint,
                         "exit": exit_clock,
+                        "exit_reason": exit_reason,
                         "day_open": day_open,
                         "day_close": day_close,
                         "gap_pct": gap_pct,
@@ -253,6 +355,8 @@ def build_trade_table(
                         "entry_price": entry_price,
                         "exit_time": exit_timestamp.isoformat(),
                         "exit_price": exit_price,
+                        "holding_minutes": holding_minutes,
+                        "total_cost_bps": 10_000.0 * total_cost,
                         "gross_short_return_pct": 100.0 * gross_short,
                         "net_short_return_pct": 100.0 * net_short,
                         "max_favorable_excursion_pct": 100.0 * mfe,
@@ -272,40 +376,51 @@ def summarize_strategy(trades: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     rng = np.random.default_rng(cfg.random_seed)
     rows: list[dict[str, object]] = []
 
+    empty_metrics = {
+        "n_events": 0,
+        "event_frequency_pct": 0.0,
+        "n_stop_exits": 0,
+        "mean_net_short_pct": math.nan,
+        "median_net_short_pct": math.nan,
+        "win_rate_pct": math.nan,
+        "std_pct": math.nan,
+        "sharpe_per_trade": math.nan,
+        "t_stat": math.nan,
+        "bootstrap_ci95_low_pct": math.nan,
+        "bootstrap_ci95_high_pct": math.nan,
+        "baseline_all_days_mean_pct": math.nan,
+        "edge_vs_all_days_pct": math.nan,
+        "nonevent_mean_pct": math.nan,
+        "event_minus_nonevent_pct": math.nan,
+        "perm_pvalue": math.nan,
+        "compounded_return_pct": math.nan,
+        "max_drawdown_pct": math.nan,
+        "profit_factor": math.nan,
+        "mean_mfe_pct": math.nan,
+        "mean_mae_pct": math.nan,
+    }
+
     for checkpoint in cfg.checkpoints:
         for exit_clock in cfg.exits:
             base = trades[(trades["checkpoint"] == checkpoint) & (trades["exit"] == exit_clock)]
             if base.empty:
                 continue
+            base = base.sort_values("date")
             all_returns = base["net_short_return_pct"].to_numpy(dtype=float)
             baseline_mean = float(np.mean(all_returns))
 
             for threshold in cfg.thresholds_pct:
                 selected = base[base["signal_return_pct"] >= threshold]
+                non_event = base[base["signal_return_pct"] < threshold]
                 values = selected["net_short_return_pct"].to_numpy(dtype=float)
+                other = non_event["net_short_return_pct"].to_numpy(dtype=float)
                 n = len(values)
+
+                row = {"checkpoint": checkpoint, "threshold_pct": threshold, "exit": exit_clock}
+                row.update(empty_metrics)
+                row["baseline_all_days_mean_pct"] = baseline_mean
                 if n == 0:
-                    rows.append(
-                        {
-                            "checkpoint": checkpoint,
-                            "threshold_pct": threshold,
-                            "exit": exit_clock,
-                            "n_events": 0,
-                            "event_frequency_pct": 0.0,
-                            "mean_net_short_pct": math.nan,
-                            "median_net_short_pct": math.nan,
-                            "win_rate_pct": math.nan,
-                            "std_pct": math.nan,
-                            "t_stat": math.nan,
-                            "bootstrap_ci95_low_pct": math.nan,
-                            "bootstrap_ci95_high_pct": math.nan,
-                            "baseline_all_days_mean_pct": baseline_mean,
-                            "edge_vs_all_days_pct": math.nan,
-                            "compounded_return_pct": math.nan,
-                            "mean_mfe_pct": math.nan,
-                            "mean_mae_pct": math.nan,
-                        }
-                    )
+                    rows.append(row)
                     continue
 
                 mean = float(np.mean(values))
@@ -313,28 +428,34 @@ def summarize_strategy(trades: pd.DataFrame, cfg: Config) -> pd.DataFrame:
                 t_stat = mean / (std / math.sqrt(n)) if n > 1 and std > 0 else math.nan
                 ci_low, ci_high = bootstrap_mean_ci(values, cfg.bootstrap_samples, rng)
                 compounded = 100.0 * (np.prod(1.0 + values / 100.0) - 1.0)
+                obs_diff, perm_p = permutation_pvalue(values, other, cfg.permutation_samples, rng)
+                max_dd, profit_factor = equity_curve_metrics(values)
 
-                rows.append(
+                row.update(
                     {
-                        "checkpoint": checkpoint,
-                        "threshold_pct": threshold,
-                        "exit": exit_clock,
                         "n_events": n,
                         "event_frequency_pct": 100.0 * n / len(base),
+                        "n_stop_exits": int((selected["exit_reason"] == "stop").sum()),
                         "mean_net_short_pct": mean,
                         "median_net_short_pct": float(np.median(values)),
                         "win_rate_pct": 100.0 * float(np.mean(values > 0)),
                         "std_pct": std,
+                        "sharpe_per_trade": mean / std if (n > 1 and std > 0) else math.nan,
                         "t_stat": t_stat,
                         "bootstrap_ci95_low_pct": ci_low,
                         "bootstrap_ci95_high_pct": ci_high,
-                        "baseline_all_days_mean_pct": baseline_mean,
                         "edge_vs_all_days_pct": mean - baseline_mean,
+                        "nonevent_mean_pct": float(np.mean(other)) if len(other) else math.nan,
+                        "event_minus_nonevent_pct": obs_diff,
+                        "perm_pvalue": perm_p,
                         "compounded_return_pct": compounded,
+                        "max_drawdown_pct": max_dd,
+                        "profit_factor": profit_factor,
                         "mean_mfe_pct": float(selected["max_favorable_excursion_pct"].mean()),
                         "mean_mae_pct": float(selected["max_adverse_excursion_pct"].mean()),
                     }
                 )
+                rows.append(row)
 
     return pd.DataFrame(rows).sort_values(["checkpoint", "threshold_pct", "exit"])
 
@@ -442,7 +563,30 @@ def parse_args() -> argparse.Namespace:
         "--cost-bps",
         type=float,
         default=10.0,
-        help="Coste total ida+vuelta en puntos básicos (default: 10 bps = 0.10%%)",
+        help="Comisión ida+vuelta en puntos básicos (default: 10 bps = 0.10%%)",
+    )
+    parser.add_argument(
+        "--spread-bps",
+        type=float,
+        default=3.0,
+        help="Spread bid/ask cruzado ida+vuelta en bps (default: 3)",
+    )
+    parser.add_argument(
+        "--borrow-annual-pct",
+        type=float,
+        default=3.0,
+        help="Coste anual del préstamo de acciones para el corto (default: 3%%)",
+    )
+    parser.add_argument(
+        "--stop-pct",
+        type=float,
+        default=0.0,
+        help="Stop-loss del corto en %% en contra (0 = sin stop; p. ej. 1.0)",
+    )
+    parser.add_argument(
+        "--csv",
+        default=None,
+        help="Ruta a un CSV propio de velas (evita el límite de 60 días de yfinance)",
     )
     parser.add_argument("--output", default="iag_intraday_results")
     return parser.parse_args()
@@ -455,12 +599,15 @@ def main() -> int:
         period=args.period,
         interval=args.interval,
         round_trip_cost_bps=args.cost_bps,
+        spread_bps=args.spread_bps,
+        borrow_annual_pct=args.borrow_annual_pct,
+        stop_loss_pct=args.stop_pct,
     )
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        raw = download_data(cfg)
+        raw = load_csv_data(cfg, args.csv) if args.csv else download_data(cfg)
         raw.to_csv(output_dir / "iag_5min_raw.csv", index_label="datetime")
 
         sessions = split_complete_sessions(raw, cfg)
@@ -493,11 +640,19 @@ def main() -> int:
         if primary.empty:
             print("No se pudo construir la configuración principal.")
         else:
-            print(primary.to_string(index=False))
+            key_cols = [
+                "checkpoint", "threshold_pct", "exit", "n_events", "mean_net_short_pct",
+                "win_rate_pct", "sharpe_per_trade", "event_minus_nonevent_pct",
+                "perm_pvalue", "max_drawdown_pct", "profit_factor",
+            ]
+            print(primary[key_cols].to_string(index=False))
 
         print(f"\nSesiones completas analizadas: {len(sessions)}")
         print(f"Resultados guardados en: {output_dir.resolve()}")
-        print("Interpretación prudente: 60 días sirven para explorar, no para validar una estrategia.")
+        print(
+            "Aviso: se prueban 36 configuraciones; 'perm_pvalue' NO está corregido por "
+            "comparaciones múltiples. Fija UNA hipótesis y valida fuera de muestra."
+        )
         return 0
 
     except Exception as exc:  # noqa: BLE001

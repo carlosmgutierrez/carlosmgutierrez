@@ -97,6 +97,32 @@ def main() -> int:
         ok = False
         print(f"[FALLO] con reversión inyectada el corto debería ganar; media {mean_net:.2f}%")
 
+    # (4) columnas y test evento vs no-evento
+    nuevas = {"sharpe_per_trade", "event_minus_nonevent_pct", "perm_pvalue",
+              "max_drawdown_pct", "profit_factor", "n_stop_exits"}
+    faltan = nuevas - set(summary.columns)
+    if faltan:
+        ok = False
+        print(f"[FALLO] faltan columnas nuevas: {sorted(faltan)}")
+    else:
+        pval = float(main_cfg["perm_pvalue"].iloc[0])
+        diff = float(main_cfg["event_minus_nonevent_pct"].iloc[0])
+        if pval < 0.05 and diff > 0:
+            print(f"[OK] evento vs no-evento significativo: dif {diff:+.2f}%, p={pval:.4f}")
+        else:
+            ok = False
+            print(f"[FALLO] esperado evento>no-evento significativo; dif {diff:+.2f}%, p={pval:.4f}")
+
+    # (5) el stop-loss dispara salidas anticipadas
+    cfg_stop = study.Config(stop_loss_pct=0.5)
+    trades_stop = study.build_trade_table(sessions, cfg_stop)
+    n_stops = int((trades_stop["exit_reason"] == "stop").sum())
+    if n_stops > 0 and (trades_stop["exit_reason"] == "time").any():
+        print(f"[OK] stop-loss operativo: {n_stops} salidas por stop de {len(trades_stop)} operaciones")
+    else:
+        ok = False
+        print(f"[FALLO] el stop-loss no generó salidas anticipadas (n_stops={n_stops})")
+
     print("\nRESULTADO:", "TODAS LAS COMPROBACIONES PASAN" if ok else "HAY FALLOS")
     return 0 if ok else 1
 

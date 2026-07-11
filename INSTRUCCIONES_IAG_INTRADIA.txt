@@ -3,52 +3,68 @@ ESTUDIO INTRADÍA DE IAG EN BME
 
 1. Instala las dependencias:
 
-   python -m pip install yfinance pandas numpy matplotlib
+   python -m pip install -r requirements.txt
+   (o: python -m pip install yfinance pandas numpy matplotlib)
 
-2. Ejecuta:
+2. Ejecuta con descarga automática (necesita red a Yahoo Finance):
 
    python iag_intraday_event_study.py
 
-3. El programa descargará IAG.MC en velas de 5 minutos y creará la carpeta:
+   O con datos propios de varios años (recomendado para validar de verdad,
+   evita el límite de ~60 días de yfinance):
 
-   iag_intraday_results/
+   python iag_intraday_event_study.py --csv mis_velas.csv
 
-   con estos resultados:
+   El CSV debe tener una columna de fecha-hora (datetime/date/timestamp/time)
+   y columnas Open, High, Low, Close, Volume. Si la fecha-hora no lleva zona
+   horaria, se asume Europe/Madrid.
 
-   - iag_5min_raw.csv
-     Velas descargadas.
+3. El programa crea la carpeta iag_intraday_results/ con:
 
-   - strategy_summary.csv
-     Resumen para umbrales de 0.5%, 1.0%, 1.5% y 2.0%; señales a
-     las 09:15, 09:30 y 10:00; salidas a las 12:00, 15:00 y 17:25.
+   - iag_5min_raw.csv .............. Velas usadas.
+   - strategy_summary.csv .......... Resumen por umbral/checkpoint/salida.
+   - all_candidate_trades.csv ...... Todas las observaciones diarias.
+   - default_strategy_event_days.csv  Días de la estrategia principal.
+   - average_intraday_paths.png .... Trayectoria media (todos vs señalados).
+   - event_return_histogram.png .... Distribución de resultados.
+   - run_config.json ............... Configuración usada.
 
-   - all_candidate_trades.csv
-     Todas las observaciones diarias, incluso días sin señal.
+4. Modelo de costes (parametrizable):
 
-   - default_strategy_event_days.csv
-     Días en que IAG había subido al menos un 1% a las 09:30 y se
-     simula una venta corta hasta las 17:25.
+   --cost-bps 10          Comisión ida+vuelta en bps (default 10 = 0.10%).
+   --spread-bps 3         Spread bid/ask cruzado ida+vuelta en bps (default 3).
+   --borrow-annual-pct 3  Coste anual del préstamo de acciones del corto.
+   El préstamo se prorratea por el tiempo que dura cada operación (intradía
+   es pequeño; pesa si se mantiene la posición muchas horas).
 
-   - average_intraday_paths.png
-     Trayectoria media de todos los días frente a los días señalados.
+5. Gestión de riesgo:
 
-   - event_return_histogram.png
-     Distribución de resultados de la estrategia principal.
+   --stop-pct 1.0   Stop-loss del corto: si el precio SUBE un 1% en contra,
+                    se cierra la operación en ese nivel. 0 = sin stop (default).
+   El resumen incluye Sharpe por operación, drawdown máximo y profit factor,
+   además del recuento de salidas por stop (n_stop_exits).
 
-4. Supuesto de costes:
+6. Estadística:
 
-   Por defecto resta 10 puntos básicos (0.10%) por operación completa.
-   Puedes cambiarlo, por ejemplo a 20 bps:
+   Se añade un contraste EVENTO vs NO-EVENTO por permutación (perm_pvalue):
+   prueba si los días señalados difieren de los NO señalados, que es la
+   pregunta relevante, en lugar de comparar solo contra cero.
 
-   python iag_intraday_event_study.py --cost-bps 20
+   IMPORTANTE: se prueban 36 configuraciones y perm_pvalue NO está corregido
+   por comparaciones múltiples. Fija UNA hipótesis antes de mirar resultados
+   y valida en un tramo final fuera de muestra.
 
-5. Precauciones metodológicas:
+7. Verificación de la lógica sin red:
 
-   - La señal utiliza solo velas completamente cerradas.
-   - La entrada se hace en la apertura de la vela siguiente.
+   python tests/synthetic_check.py
+
+8. Precauciones metodológicas:
+
+   - La señal usa solo velas completamente cerradas; la entrada es la apertura
+     de la vela siguiente (sin look-ahead).
    - Se eliminan sesiones incompletas.
-   - Los últimos 60 días son solo una prueba exploratoria.
-   - Para validar la hipótesis hacen falta varios años y un periodo final
-     completamente fuera de muestra.
-   - No se modelan todavía el spread variable, la disponibilidad o el coste
-     del préstamo de acciones para posiciones cortas, ni el slippage real.
+   - Con yfinance, ~60 días son solo exploratorios; usa --csv con años de
+     historia y reserva el tramo final como out-of-sample.
+   - El stop asume ejecución al nivel exacto; un hueco (gap) podría llenarse
+     peor. El coste real de préstamo y su disponibilidad pueden variar, y en
+     BME/CNMV pueden existir vetos temporales a las posiciones cortas.

@@ -20,7 +20,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from iag_intraday_event_study import Config, load_csv_data, parse_clock, split_complete_sessions
+from iag_intraday_event_study import (
+    Config,
+    load_csv_data,
+    minutes_from_midnight,
+    parse_clock,
+    split_complete_sessions,
+)
 
 
 def hhmm(minutes: int) -> str:
@@ -204,6 +210,61 @@ def make_spaghetti_figures(mat: pd.DataFrame, out_dir: Path) -> dict:
     return {"verdes": len(up_cols), "rojos": len(down_cols)}
 
 
+def make_weekly_grid(mat: pd.DataFrame, out_dir: Path) -> int:
+    """Rejilla de paneles, uno por semana natural, con las trayectorias de esa
+    semana en verde (cierre>apertura) o rojo (cierre<apertura). Ejes compartidos
+    para comparar de un vistazo. Cada línea se etiqueta con su día (L M X J V)."""
+    import math as _math
+
+    weeks: dict[tuple, list] = {}
+    for c in mat.columns:
+        ts = pd.Timestamp(c)
+        iso = ts.isocalendar()
+        weeks.setdefault((iso.year, iso.week), []).append((ts, c))
+    order = sorted(weeks)
+    nw = len(order)
+    if nw == 0:
+        return 0
+
+    ncols = 3
+    nrows = _math.ceil(nw / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.6 * ncols, 3.1 * nrows),
+                             sharex=True, sharey=True)
+    axes = np.array(axes).reshape(-1)
+    x = mat.index.to_numpy()
+    ticks = [minutes_from_midnight(t) for t in ("09:00", "12:00", "15:00", "17:00")]
+    wd = {0: "L", 1: "M", 2: "X", 3: "J", 4: "V", 5: "S", 6: "D"}
+
+    for i, wk in enumerate(order):
+        ax = axes[i]
+        for ts, c in sorted(weeks[wk]):
+            s = mat[c].dropna()
+            if s.empty:
+                continue
+            color = "green" if s.iloc[-1] > 0 else "red"
+            ax.plot(s.index.to_numpy(), s.to_numpy(), color=color, linewidth=1.4, alpha=0.9)
+            ax.annotate(wd[ts.weekday()], (s.index[-1], s.iloc[-1]), fontsize=8,
+                        color=color, xytext=(3, 0), textcoords="offset points", va="center")
+        ax.axhline(0, color="gray", linewidth=0.8)
+        first_day = min(t for t, _ in weeks[wk])
+        ax.set_title(f"Sem {i + 1} · desde {first_day.strftime('%d-%b')}", fontsize=10)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([hhmm(t) for t in ticks], fontsize=8)
+        ax.grid(True, alpha=0.25)
+
+    for j in range(nw, len(axes)):
+        axes[j].axis("off")
+
+    fig.suptitle("Trayectorias intradía de IAG por semana  (verde: cierra arriba · rojo: cierra abajo)",
+                 fontsize=13)
+    fig.supxlabel("Hora (Madrid)")
+    fig.supylabel("Cotización respecto a la apertura (%)")
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.savefig(out_dir / "trayectorias_por_semana.png", dpi=150)
+    plt.close(fig)
+    return nw
+
+
 def make_figure(prof: pd.DataFrame, n_days: int, out_dir: Path) -> tuple[pd.Series, pd.Series]:
     hi = prof.loc[prof["mean_pct"].idxmax()]
     lo = prof.loc[prof["mean_pct"].idxmin()]
@@ -270,6 +331,10 @@ def main() -> int:
         sp = make_spaghetti_figures(mat, Path(args.output))
         print(f"\n--- Trayectorias superpuestas (espagueti) ---")
         print(f"Figuras generadas: {sp['verdes']} días verdes y {sp['rojos']} días rojos.")
+
+        nw = make_weekly_grid(mat, Path(args.output))
+        print(f"\n--- Rejilla por semanas ---")
+        print(f"Generado trayectorias_por_semana.png con {nw} semanas.")
         print(f"\nResultados en: {Path(args.output).resolve()}")
         return 0
     except Exception as exc:  # noqa: BLE001

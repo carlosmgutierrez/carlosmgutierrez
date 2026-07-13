@@ -210,14 +210,15 @@ def make_spaghetti_figures(mat: pd.DataFrame, out_dir: Path) -> dict:
     return {"verdes": len(up_cols), "rojos": len(down_cols)}
 
 
-def make_weekly_grid(mat: pd.DataFrame, out_dir: Path) -> int:
-    """Rejilla de paneles, uno por semana natural, con las trayectorias de esa
-    semana en verde (cierre>apertura) o rojo (cierre<apertura). Ejes compartidos
-    para comparar de un vistazo. Cada línea se etiqueta con su día (L M X J V)."""
+def _weekly_grid(mat_plot: pd.DataFrame, color_map: dict, title: str, ylabel: str,
+                 filename: str, out_dir: Path) -> int:
+    """Núcleo genérico: un panel por semana, cada línea coloreada según color_map."""
     import math as _math
 
     weeks: dict[tuple, list] = {}
-    for c in mat.columns:
+    for c in mat_plot.columns:
+        if c not in color_map:
+            continue
         ts = pd.Timestamp(c)
         iso = ts.isocalendar()
         weeks.setdefault((iso.year, iso.week), []).append((ts, c))
@@ -231,17 +232,16 @@ def make_weekly_grid(mat: pd.DataFrame, out_dir: Path) -> int:
     fig, axes = plt.subplots(nrows, ncols, figsize=(4.6 * ncols, 3.1 * nrows),
                              sharex=True, sharey=True)
     axes = np.array(axes).reshape(-1)
-    x = mat.index.to_numpy()
     ticks = [minutes_from_midnight(t) for t in ("09:00", "12:00", "15:00", "17:00")]
     wd = {0: "L", 1: "M", 2: "X", 3: "J", 4: "V", 5: "S", 6: "D"}
 
     for i, wk in enumerate(order):
         ax = axes[i]
         for ts, c in sorted(weeks[wk]):
-            s = mat[c].dropna()
+            s = mat_plot[c].dropna()
             if s.empty:
                 continue
-            color = "green" if s.iloc[-1] > 0 else "red"
+            color = color_map[c]
             ax.plot(s.index.to_numpy(), s.to_numpy(), color=color, linewidth=1.4, alpha=0.9)
             ax.annotate(wd[ts.weekday()], (s.index[-1], s.iloc[-1]), fontsize=8,
                         color=color, xytext=(3, 0), textcoords="offset points", va="center")
@@ -255,14 +255,44 @@ def make_weekly_grid(mat: pd.DataFrame, out_dir: Path) -> int:
     for j in range(nw, len(axes)):
         axes[j].axis("off")
 
-    fig.suptitle("Trayectorias intradía de IAG por semana  (verde: cierra arriba · rojo: cierra abajo)",
-                 fontsize=13)
+    fig.suptitle(title, fontsize=13)
     fig.supxlabel("Hora (Madrid)")
-    fig.supylabel("Cotización respecto a la apertura (%)")
+    fig.supylabel(ylabel)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
-    fig.savefig(out_dir / "trayectorias_por_semana.png", dpi=150)
+    fig.savefig(out_dir / filename, dpi=150)
     plt.close(fig)
     return nw
+
+
+def make_weekly_grid(mat: pd.DataFrame, out_dir: Path) -> int:
+    """Rejilla por semana coloreada por el CIERRE (verde: cierra>abre)."""
+    color_map = {}
+    for c in mat.columns:
+        s = mat[c].dropna()
+        if not s.empty:
+            color_map[c] = "green" if s.iloc[-1] > 0 else "red"
+    return _weekly_grid(
+        mat, color_map,
+        "Trayectorias intradía de IAG por semana  (verde: cierra arriba · rojo: cierra abajo)",
+        "Cotización respecto a la apertura (%)", "trayectorias_por_semana.png", out_dir)
+
+
+def make_weekly_grid_by_open(mat: pd.DataFrame, meta: pd.DataFrame, out_dir: Path) -> int:
+    """Rejilla por semana coloreada por cómo ABRE el día (gap vs cierre anterior):
+    verde = abre en positivo, rojo = abre en negativo. Se normaliza al cierre
+    anterior, así los verdes arrancan por encima de 0 y los rojos por debajo."""
+    gap = meta["gap_pct"]
+    cols = [c for c in mat.columns if c in gap.index and pd.notna(gap[c])]
+    matp = pd.DataFrame(index=mat.index)
+    color_map = {}
+    for c in cols:
+        matp[c] = 100.0 * ((1.0 + mat[c] / 100.0) * (1.0 + gap[c] / 100.0) - 1.0)
+        color_map[c] = "green" if gap[c] > 0 else "red"
+    return _weekly_grid(
+        matp, color_map,
+        "Trayectorias intradía de IAG por semana  (verde: ABRE en positivo · rojo: ABRE en negativo)",
+        "Cotización respecto al cierre anterior (%)",
+        "trayectorias_por_semana_por_apertura.png", out_dir)
 
 
 def make_figure(prof: pd.DataFrame, n_days: int, out_dir: Path) -> tuple[pd.Series, pd.Series]:
@@ -333,8 +363,10 @@ def main() -> int:
         print(f"Figuras generadas: {sp['verdes']} días verdes y {sp['rojos']} días rojos.")
 
         nw = make_weekly_grid(mat, Path(args.output))
-        print(f"\n--- Rejilla por semanas ---")
-        print(f"Generado trayectorias_por_semana.png con {nw} semanas.")
+        nw2 = make_weekly_grid_by_open(mat, meta, Path(args.output))
+        print(f"\n--- Rejillas por semanas ---")
+        print(f"trayectorias_por_semana.png (color por cierre) con {nw} semanas.")
+        print(f"trayectorias_por_semana_por_apertura.png (color por apertura) con {nw2} semanas.")
         print(f"\nResultados en: {Path(args.output).resolve()}")
         return 0
     except Exception as exc:  # noqa: BLE001

@@ -295,15 +295,24 @@ def make_weekly_grid_by_open(mat: pd.DataFrame, meta: pd.DataFrame, out_dir: Pat
         "trayectorias_por_semana_por_apertura.png", out_dir)
 
 
-def make_weekday_grid(mat: pd.DataFrame, out_dir: Path) -> dict:
-    """Rejilla con un panel por día de la semana (todos los lunes juntos, etc.),
-    cada uno con sus trayectorias superpuestas y la media resaltada. Un panel
-    final compara las 5 medias. Normalizado a la apertura de cada día."""
+def make_weekday_grid(mat: pd.DataFrame, meta: pd.DataFrame, out_dir: Path) -> dict:
+    """Rejilla con un panel por día de la semana (todos los lunes juntos, etc.).
+    Cada línea va en verde/rojo según cómo ABRE el día (gap+ / gap−), normalizada
+    al cierre anterior. La media del día en negro; un panel compara las 5 medias."""
     nombres = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     colores = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
 
+    # Normaliza al cierre anterior y colorea por el signo del gap de apertura.
+    gap = meta["gap_pct"]
+    cols_ok = [c for c in mat.columns if c in gap.index and pd.notna(gap[c])]
+    matp = pd.DataFrame(index=mat.index)
+    color_map = {}
+    for c in cols_ok:
+        matp[c] = 100.0 * ((1.0 + mat[c] / 100.0) * (1.0 + gap[c] / 100.0) - 1.0)
+        color_map[c] = "green" if gap[c] > 0 else "red"
+
     por_dia: dict[int, list] = {i: [] for i in range(5)}
-    for c in mat.columns:
+    for c in cols_ok:
         wd = pd.Timestamp(c).weekday()
         if wd < 5:
             por_dia[wd].append(c)
@@ -319,10 +328,10 @@ def make_weekday_grid(mat: pd.DataFrame, out_dir: Path) -> dict:
         cols = por_dia[i]
         counts[i] = len(cols)
         for c in cols:
-            s = mat[c].dropna()
-            ax.plot(s.index.to_numpy(), s.to_numpy(), color=colores[i], alpha=0.22, linewidth=0.8)
+            s = matp[c].dropna()
+            ax.plot(s.index.to_numpy(), s.to_numpy(), color=color_map[c], alpha=0.35, linewidth=0.9)
         if cols:
-            m = mat[cols].mean(axis=1)
+            m = matp[cols].mean(axis=1)
             medias[i] = m
             ax.plot(m.index.to_numpy(), m.to_numpy(), color="black", linewidth=2.4)
             ax.annotate(f"{m.dropna().iloc[-1]:+.2f}%", (m.dropna().index[-1], m.dropna().iloc[-1]),
@@ -333,7 +342,7 @@ def make_weekday_grid(mat: pd.DataFrame, out_dir: Path) -> dict:
         ax.set_xticklabels([hhmm(t) for t in ticks], fontsize=8)
         ax.grid(True, alpha=0.25)
 
-    # Panel 6: comparación de las 5 medias
+    # Panel 6: comparación de las 5 medias (aquí sí, un color por día para distinguirlas)
     ax = axes[5]
     for i in range(5):
         if i in medias:
@@ -347,10 +356,11 @@ def make_weekday_grid(mat: pd.DataFrame, out_dir: Path) -> dict:
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.25)
 
-    fig.suptitle("Trayectorias intradía de IAG por día de la semana  (media en negro)", fontsize=13)
+    fig.suptitle("Trayectorias intradía de IAG por día de la semana\n"
+                 "(línea verde: abre en positivo · roja: abre en negativo · media en negro)", fontsize=13)
     fig.supxlabel("Hora (Madrid)")
-    fig.supylabel("Cotización respecto a la apertura (%)")
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.supylabel("Cotización respecto al cierre anterior (%)")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(out_dir / "trayectorias_por_dia_semana.png", dpi=150)
     plt.close(fig)
 
@@ -431,8 +441,8 @@ def main() -> int:
         print(f"trayectorias_por_semana.png (color por cierre) con {nw} semanas.")
         print(f"trayectorias_por_semana_por_apertura.png (color por apertura) con {nw2} semanas.")
 
-        wd = make_weekday_grid(mat, Path(args.output))
-        print(f"\n--- Por día de la semana (cierre medio desde la apertura) ---")
+        wd = make_weekday_grid(mat, meta, Path(args.output))
+        print(f"\n--- Por día de la semana (cierre medio respecto al cierre anterior) ---")
         for nombre, (n, cierre) in wd.items():
             print(f"{nombre:11s} N={n:2d}   media al cierre: {cierre:+.3f}%")
         print(f"\nResultados en: {Path(args.output).resolve()}")

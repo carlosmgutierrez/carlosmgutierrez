@@ -295,6 +295,69 @@ def make_weekly_grid_by_open(mat: pd.DataFrame, meta: pd.DataFrame, out_dir: Pat
         "trayectorias_por_semana_por_apertura.png", out_dir)
 
 
+def make_weekday_grid(mat: pd.DataFrame, out_dir: Path) -> dict:
+    """Rejilla con un panel por día de la semana (todos los lunes juntos, etc.),
+    cada uno con sus trayectorias superpuestas y la media resaltada. Un panel
+    final compara las 5 medias. Normalizado a la apertura de cada día."""
+    nombres = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+    colores = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+
+    por_dia: dict[int, list] = {i: [] for i in range(5)}
+    for c in mat.columns:
+        wd = pd.Timestamp(c).weekday()
+        if wd < 5:
+            por_dia[wd].append(c)
+
+    ticks = [minutes_from_midnight(t) for t in ("09:00", "12:00", "15:00", "17:00")]
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8), sharex=True, sharey=True)
+    axes = axes.reshape(-1)
+
+    medias = {}
+    counts = {}
+    for i in range(5):
+        ax = axes[i]
+        cols = por_dia[i]
+        counts[i] = len(cols)
+        for c in cols:
+            s = mat[c].dropna()
+            ax.plot(s.index.to_numpy(), s.to_numpy(), color=colores[i], alpha=0.22, linewidth=0.8)
+        if cols:
+            m = mat[cols].mean(axis=1)
+            medias[i] = m
+            ax.plot(m.index.to_numpy(), m.to_numpy(), color="black", linewidth=2.4)
+            ax.annotate(f"{m.dropna().iloc[-1]:+.2f}%", (m.dropna().index[-1], m.dropna().iloc[-1]),
+                        fontsize=9, fontweight="bold", xytext=(4, 0), textcoords="offset points", va="center")
+        ax.axhline(0, color="gray", linewidth=0.8)
+        ax.set_title(f"{nombres[i]}  (N={len(cols)})", fontsize=11)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([hhmm(t) for t in ticks], fontsize=8)
+        ax.grid(True, alpha=0.25)
+
+    # Panel 6: comparación de las 5 medias
+    ax = axes[5]
+    for i in range(5):
+        if i in medias:
+            m = medias[i]
+            ax.plot(m.index.to_numpy(), m.to_numpy(), color=colores[i], linewidth=2,
+                    label=f"{nombres[i]} ({counts[i]})")
+    ax.axhline(0, color="gray", linewidth=0.8)
+    ax.set_title("Comparación de las medias", fontsize=11)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([hhmm(t) for t in ticks], fontsize=8)
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.25)
+
+    fig.suptitle("Trayectorias intradía de IAG por día de la semana  (media en negro)", fontsize=13)
+    fig.supxlabel("Hora (Madrid)")
+    fig.supylabel("Cotización respecto a la apertura (%)")
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.savefig(out_dir / "trayectorias_por_dia_semana.png", dpi=150)
+    plt.close(fig)
+
+    return {nombres[i]: (counts[i], float(medias[i].dropna().iloc[-1]) if i in medias else float("nan"))
+            for i in range(5)}
+
+
 def make_figure(prof: pd.DataFrame, n_days: int, out_dir: Path) -> tuple[pd.Series, pd.Series]:
     hi = prof.loc[prof["mean_pct"].idxmax()]
     lo = prof.loc[prof["mean_pct"].idxmin()]
@@ -367,6 +430,11 @@ def main() -> int:
         print(f"\n--- Rejillas por semanas ---")
         print(f"trayectorias_por_semana.png (color por cierre) con {nw} semanas.")
         print(f"trayectorias_por_semana_por_apertura.png (color por apertura) con {nw2} semanas.")
+
+        wd = make_weekday_grid(mat, Path(args.output))
+        print(f"\n--- Por día de la semana (cierre medio desde la apertura) ---")
+        for nombre, (n, cierre) in wd.items():
+            print(f"{nombre:11s} N={n:2d}   media al cierre: {cierre:+.3f}%")
         print(f"\nResultados en: {Path(args.output).resolve()}")
         return 0
     except Exception as exc:  # noqa: BLE001

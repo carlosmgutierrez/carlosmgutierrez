@@ -34,21 +34,27 @@ def build_profile(csv_path: str, out_dir: Path) -> pd.DataFrame:
     open_ok = parse_clock("09:05")
 
     series_list = []
+    meta_rows = []
+    prev_close = None  # cierre de la sesión anterior, para el gap de apertura
     for date in sorted(sessions):
         g = sessions[date].sort_index()
-        if g.index[0].time() > open_ok:  # exige apertura real
-            continue
         day_open = float(g["Open"].to_numpy()[0])
-        norm = 100.0 * (g["Close"].to_numpy(dtype=float) / day_open - 1.0)
-        minute = (g.index.hour * 60 + g.index.minute).to_numpy()
-        s = pd.Series(norm, index=minute)
-        s = s.groupby(level=0).last()  # por si hay duplicados
-        series_list.append(s.rename(str(date.date())))
+        day_close = float(g["Close"].to_numpy()[-1])
+        gap = None if prev_close is None else 100.0 * (day_open / prev_close - 1.0)
+        if g.index[0].time() <= open_ok:  # exige apertura real para la trayectoria
+            norm = 100.0 * (g["Close"].to_numpy(dtype=float) / day_open - 1.0)
+            minute = (g.index.hour * 60 + g.index.minute).to_numpy()
+            s = pd.Series(norm, index=minute)
+            s = s.groupby(level=0).last()  # por si hay duplicados
+            series_list.append(s.rename(str(date.date())))
+            meta_rows.append({"date": str(date.date()), "gap_pct": gap})
+        prev_close = day_close  # se actualiza siempre (también en días descartados)
 
     if len(series_list) < 10:
         raise RuntimeError(f"Solo {len(series_list)} sesiones válidas; muy pocas.")
 
     mat = pd.concat(series_list, axis=1).sort_index()
+    meta = pd.DataFrame(meta_rows).set_index("date")
     n_days = mat.shape[1]
     prof = pd.DataFrame({
         "minute": mat.index,
@@ -64,7 +70,7 @@ def build_profile(csv_path: str, out_dir: Path) -> pd.DataFrame:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     prof.to_csv(out_dir / "time_of_day_profile.csv", index=False)
-    return prof, n_days, mat
+    return prof, n_days, mat, meta
 
 
 def _group_mean(mat: pd.DataFrame, cols: list[str], min_frac: float = 0.6) -> pd.DataFrame:
@@ -79,22 +85,13 @@ def _group_mean(mat: pd.DataFrame, cols: list[str], min_frac: float = 0.6) -> pd
     return out[out["n"] >= max(5, int(min_frac * n))].reset_index(drop=True)
 
 
-def make_direction_figure(mat: pd.DataFrame, out_dir: Path):
-    """Separa días alcistas (cierre>apertura) de bajistas y dibuja ambas formas."""
-    # Dirección de cada día = signo del último valor normalizado (cierre/apertura-1).
-    up_cols, down_cols = [], []
-    for c in mat.columns:
-        last = mat[c].dropna()
-        if last.empty:
-            continue
-        (up_cols if last.iloc[-1] > 0 else down_cols).append(c)
-
-    up = _group_mean(mat, up_cols)
-    down = _group_mean(mat, down_cols)
+def _plot_two_groups(mat, pos_cols, neg_cols, pos_label, neg_label,
+                     title, filename, out_dir):
+    pos = _group_mean(mat, pos_cols) if pos_cols else pd.DataFrame()
+    neg = _group_mean(mat, neg_cols) if neg_cols else pd.DataFrame()
 
     fig, ax = plt.subplots(figsize=(11, 6))
-    for grp, color, label in ((up, "green", f"Días al alza (N={len(up_cols)})"),
-                              (down, "red", f"Días a la baja (N={len(down_cols)})")):
+    for grp, color, label in ((pos, "green", pos_label), (neg, "red", neg_label)):
         if grp.empty:
             continue
         x, y, se = grp["minute"].to_numpy(), grp["mean_pct"].to_numpy(), grp["stderr_pct"].to_numpy()
@@ -108,20 +105,39 @@ def make_direction_figure(mat: pd.DataFrame, out_dir: Path):
     ax.set_xticklabels([hhmm(t) for t in ticks], rotation=45)
     ax.set_xlabel("Hora (Madrid)")
     ax.set_ylabel("Cotización media respecto a la apertura (%)")
-    ax.set_title("Forma media del día en IAG según cómo acaba la jornada")
+    ax.set_title(title)
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_dir / "time_of_day_by_direction.png", dpi=160)
+    fig.savefig(out_dir / filename, dpi=160)
     plt.close(fig)
 
-    summary = {"up_days": len(up_cols), "down_days": len(down_cols)}
-    if not up.empty:
-        hi = up.loc[up["mean_pct"].idxmax()]
-        summary["up_peak"] = (hhmm(hi["minute"]), float(hi["mean_pct"]))
-    if not down.empty:
-        lo = down.loc[down["mean_pct"].idxmin()]
-        summary["down_trough"] = (hhmm(lo["minute"]), float(lo["mean_pct"]))
+    summary = {}
+    if not pos.empty:
+        summary["pos_close"] = (hhmm(pos["minute"].iloc[-1]), float(pos["mean_pct"].iloc[-1]))
+    if not neg.empty:
+        summary["neg_close"] = (hhmm(neg["minute"].iloc[-1]), float(neg["mean_pct"].iloc[-1]))
+    return summary
+
+
+def make_gap_figure(mat: pd.DataFrame, meta: pd.DataFrame, out_dir: Path):
+    """Separa días por el signo del GAP de apertura (open vs cierre anterior).
+
+    El gap se conoce a las 09:00, sin usar información futura.
+    """
+    gap = meta["gap_pct"]
+    pos_cols = [c for c in mat.columns if c in gap.index and pd.notna(gap[c]) and gap[c] > 0]
+    neg_cols = [c for c in mat.columns if c in gap.index and pd.notna(gap[c]) and gap[c] < 0]
+    summary = _plot_two_groups(
+        mat, pos_cols, neg_cols,
+        pos_label=f"Abre en positivo / gap+ (N={len(pos_cols)})",
+        neg_label=f"Abre en negativo / gap− (N={len(neg_cols)})",
+        title="Forma media del día en IAG según cómo ABRE (gap de apertura)\n"
+              "(clasificación sin información futura)",
+        filename="time_of_day_by_open_gap.png", out_dir=out_dir,
+    )
+    summary["pos_days"] = len(pos_cols)
+    summary["neg_days"] = len(neg_cols)
     return summary
 
 
@@ -166,7 +182,7 @@ def main() -> int:
     p.add_argument("--output", default="iag_time_of_day_results")
     args = p.parse_args()
     try:
-        prof, n_days, mat = build_profile(args.csv, Path(args.output))
+        prof, n_days, mat, meta = build_profile(args.csv, Path(args.output))
         hi, lo = make_figure(prof, n_days, Path(args.output))
         print(f"Días analizados: {n_days}")
         print(f"HORA MÁS ALTA de media: {hi['clock']}  ->  {hi['mean_pct']:+.3f}% sobre la apertura")
@@ -174,13 +190,13 @@ def main() -> int:
         print(f"\nApertura (09:00) = 0% por definición. Cierre medio: "
               f"{prof['mean_pct'].iloc[-1]:+.3f}% ({prof['clock'].iloc[-1]}).")
 
-        d = make_direction_figure(mat, Path(args.output))
-        print(f"\n--- Separando por dirección del día ---")
-        print(f"Días al alza: {d['up_days']}   |   Días a la baja: {d['down_days']}")
-        if "up_peak" in d:
-            print(f"Días al alza: máximo medio a las {d['up_peak'][0]} ({d['up_peak'][1]:+.3f}%)")
-        if "down_trough" in d:
-            print(f"Días a la baja: mínimo medio a las {d['down_trough'][0]} ({d['down_trough'][1]:+.3f}%)")
+        d = make_gap_figure(mat, meta, Path(args.output))
+        print(f"\n--- Separando por el GAP de apertura (sin info futura) ---")
+        print(f"Abre en positivo: {d['pos_days']}   |   Abre en negativo: {d['neg_days']}")
+        if "pos_close" in d:
+            print(f"Abre en positivo: cierre medio {d['pos_close'][1]:+.3f}% (a las {d['pos_close'][0]})")
+        if "neg_close" in d:
+            print(f"Abre en negativo: cierre medio {d['neg_close'][1]:+.3f}% (a las {d['neg_close'][0]})")
         print(f"\nResultados en: {Path(args.output).resolve()}")
         return 0
     except Exception as exc:  # noqa: BLE001

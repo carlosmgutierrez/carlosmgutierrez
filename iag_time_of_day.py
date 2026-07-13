@@ -86,7 +86,8 @@ def _group_mean(mat: pd.DataFrame, cols: list[str], min_frac: float = 0.6) -> pd
 
 
 def _plot_two_groups(mat, pos_cols, neg_cols, pos_label, neg_label,
-                     title, filename, out_dir):
+                     title, filename, out_dir,
+                     ylabel="Cotización media respecto a la apertura (%)"):
     pos = _group_mean(mat, pos_cols) if pos_cols else pd.DataFrame()
     neg = _group_mean(mat, neg_cols) if neg_cols else pd.DataFrame()
 
@@ -104,7 +105,7 @@ def _plot_two_groups(mat, pos_cols, neg_cols, pos_label, neg_label,
     ax.set_xticks(ticks)
     ax.set_xticklabels([hhmm(t) for t in ticks], rotation=45)
     ax.set_xlabel("Hora (Madrid)")
-    ax.set_ylabel("Cotización media respecto a la apertura (%)")
+    ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -139,6 +140,28 @@ def make_gap_figure(mat: pd.DataFrame, meta: pd.DataFrame, out_dir: Path):
     summary["pos_days"] = len(pos_cols)
     summary["neg_days"] = len(neg_cols)
     return summary
+
+
+def make_gap_vs_prevclose_figure(mat: pd.DataFrame, meta: pd.DataFrame, out_dir: Path):
+    """Igual que la anterior pero normalizando al CIERRE ANTERIOR, así el gap se ve:
+    los días que abren en negativo empiezan por DEBAJO de 0."""
+    gap = meta["gap_pct"]
+    cols = [c for c in mat.columns if c in gap.index and pd.notna(gap[c])]
+    # path_vs_prevclose = (1 + path_vs_open) * (1 + gap) - 1
+    matp = pd.DataFrame(index=mat.index)
+    for c in cols:
+        matp[c] = 100.0 * ((1.0 + mat[c] / 100.0) * (1.0 + gap[c] / 100.0) - 1.0)
+    pos_cols = [c for c in cols if gap[c] > 0]
+    neg_cols = [c for c in cols if gap[c] < 0]
+    return _plot_two_groups(
+        matp, pos_cols, neg_cols,
+        pos_label=f"Abre en positivo / gap+ (N={len(pos_cols)})",
+        neg_label=f"Abre en negativo / gap− (N={len(neg_cols)})",
+        title="Forma del día en IAG respecto al CIERRE ANTERIOR (el gap SÍ se ve)\n"
+              "Los días que abren en negativo empiezan por debajo de 0",
+        filename="time_of_day_by_open_gap_vs_prevclose.png", out_dir=out_dir,
+        ylabel="Cotización media respecto al cierre anterior (%)",
+    )
 
 
 def make_figure(prof: pd.DataFrame, n_days: int, out_dir: Path) -> tuple[pd.Series, pd.Series]:
@@ -197,6 +220,13 @@ def main() -> int:
             print(f"Abre en positivo: cierre medio {d['pos_close'][1]:+.3f}% (a las {d['pos_close'][0]})")
         if "neg_close" in d:
             print(f"Abre en negativo: cierre medio {d['neg_close'][1]:+.3f}% (a las {d['neg_close'][0]})")
+
+        d2 = make_gap_vs_prevclose_figure(mat, meta, Path(args.output))
+        print(f"\n--- Respecto al cierre anterior (el gap se ve) ---")
+        if "pos_close" in d2:
+            print(f"Abre en positivo: acaba el día a {d2['pos_close'][1]:+.3f}% del cierre anterior")
+        if "neg_close" in d2:
+            print(f"Abre en negativo: acaba el día a {d2['neg_close'][1]:+.3f}% del cierre anterior")
         print(f"\nResultados en: {Path(args.output).resolve()}")
         return 0
     except Exception as exc:  # noqa: BLE001

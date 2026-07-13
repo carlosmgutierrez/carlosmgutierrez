@@ -64,7 +64,65 @@ def build_profile(csv_path: str, out_dir: Path) -> pd.DataFrame:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     prof.to_csv(out_dir / "time_of_day_profile.csv", index=False)
-    return prof, n_days
+    return prof, n_days, mat
+
+
+def _group_mean(mat: pd.DataFrame, cols: list[str], min_frac: float = 0.6) -> pd.DataFrame:
+    sub = mat[cols]
+    n = len(cols)
+    out = pd.DataFrame({
+        "minute": sub.index,
+        "mean_pct": sub.mean(axis=1).to_numpy(),
+        "n": sub.count(axis=1).to_numpy(),
+        "stderr_pct": (sub.std(axis=1, ddof=1) / np.sqrt(sub.count(axis=1))).to_numpy(),
+    })
+    return out[out["n"] >= max(5, int(min_frac * n))].reset_index(drop=True)
+
+
+def make_direction_figure(mat: pd.DataFrame, out_dir: Path):
+    """Separa días alcistas (cierre>apertura) de bajistas y dibuja ambas formas."""
+    # Dirección de cada día = signo del último valor normalizado (cierre/apertura-1).
+    up_cols, down_cols = [], []
+    for c in mat.columns:
+        last = mat[c].dropna()
+        if last.empty:
+            continue
+        (up_cols if last.iloc[-1] > 0 else down_cols).append(c)
+
+    up = _group_mean(mat, up_cols)
+    down = _group_mean(mat, down_cols)
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+    for grp, color, label in ((up, "green", f"Días al alza (N={len(up_cols)})"),
+                              (down, "red", f"Días a la baja (N={len(down_cols)})")):
+        if grp.empty:
+            continue
+        x, y, se = grp["minute"].to_numpy(), grp["mean_pct"].to_numpy(), grp["stderr_pct"].to_numpy()
+        ax.plot(x, y, color=color, linewidth=2, label=label)
+        ax.fill_between(x, y - se, y + se, color=color, alpha=0.12)
+
+    ax.axhline(0, color="gray", linewidth=1)
+    all_min = mat.index.to_numpy()
+    ticks = np.arange((all_min.min() // 30) * 30, all_min.max() + 1, 30)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([hhmm(t) for t in ticks], rotation=45)
+    ax.set_xlabel("Hora (Madrid)")
+    ax.set_ylabel("Cotización media respecto a la apertura (%)")
+    ax.set_title("Forma media del día en IAG según cómo acaba la jornada")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_dir / "time_of_day_by_direction.png", dpi=160)
+    plt.close(fig)
+
+    summary = {"up_days": len(up_cols), "down_days": len(down_cols)}
+    if not up.empty:
+        hi = up.loc[up["mean_pct"].idxmax()]
+        summary["up_peak"] = (hhmm(hi["minute"]), float(hi["mean_pct"]))
+    if not down.empty:
+        lo = down.loc[down["mean_pct"].idxmin()]
+        summary["down_trough"] = (hhmm(lo["minute"]), float(lo["mean_pct"]))
+    return summary
 
 
 def make_figure(prof: pd.DataFrame, n_days: int, out_dir: Path) -> tuple[pd.Series, pd.Series]:
@@ -108,14 +166,22 @@ def main() -> int:
     p.add_argument("--output", default="iag_time_of_day_results")
     args = p.parse_args()
     try:
-        prof, n_days = build_profile(args.csv, Path(args.output))
+        prof, n_days, mat = build_profile(args.csv, Path(args.output))
         hi, lo = make_figure(prof, n_days, Path(args.output))
         print(f"Días analizados: {n_days}")
         print(f"HORA MÁS ALTA de media: {hi['clock']}  ->  {hi['mean_pct']:+.3f}% sobre la apertura")
         print(f"HORA MÁS BAJA de media: {lo['clock']}  ->  {lo['mean_pct']:+.3f}% sobre la apertura")
         print(f"\nApertura (09:00) = 0% por definición. Cierre medio: "
               f"{prof['mean_pct'].iloc[-1]:+.3f}% ({prof['clock'].iloc[-1]}).")
-        print(f"Resultados en: {Path(args.output).resolve()}")
+
+        d = make_direction_figure(mat, Path(args.output))
+        print(f"\n--- Separando por dirección del día ---")
+        print(f"Días al alza: {d['up_days']}   |   Días a la baja: {d['down_days']}")
+        if "up_peak" in d:
+            print(f"Días al alza: máximo medio a las {d['up_peak'][0]} ({d['up_peak'][1]:+.3f}%)")
+        if "down_trough" in d:
+            print(f"Días a la baja: mínimo medio a las {d['down_trough'][0]} ({d['down_trough'][1]:+.3f}%)")
+        print(f"\nResultados en: {Path(args.output).resolve()}")
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: {exc}", file=sys.stderr)

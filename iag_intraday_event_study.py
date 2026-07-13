@@ -148,9 +148,27 @@ def load_csv_data(cfg: Config, csv_path: str) -> pd.DataFrame:
     Formato esperado: una columna de fecha-hora (datetime/date/time/timestamp)
     y columnas Open, High, Low, Close, Volume (mayúsculas/minúsculas indistintas).
     Si la fecha-hora no lleva zona horaria se asume `cfg.timezone`.
+
+    También admite el CSV tal cual lo exporta yfinance, con la cabecera de tres
+    filas (Price / Ticker / Datetime).
     """
     print(f"Cargando velas desde CSV: {csv_path} ...")
-    df = pd.read_csv(csv_path)
+
+    # Detecta el formato multi-cabecera de yfinance (filas Price / Ticker / ...).
+    with open(csv_path, "r", encoding="utf-8", errors="ignore") as handle:
+        head = [handle.readline() for _ in range(2)]
+    is_yahoo = (
+        head[0].split(",")[0].strip() == "Price"
+        and head[1].split(",")[0].strip() == "Ticker"
+    )
+    if is_yahoo:
+        # Fila 0 = nombres de campo; filas 1-2 = Ticker y Datetime; datos desde la 3.
+        df = pd.read_csv(csv_path, skiprows=[1, 2], index_col=0)
+        df.index.name = "datetime"
+        df = df.reset_index()
+    else:
+        df = pd.read_csv(csv_path)
+
     df.columns = [str(c).strip() for c in df.columns]
     lower = {c.lower(): c for c in df.columns}
 

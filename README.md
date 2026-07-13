@@ -10,6 +10,7 @@ matinal, ¿tiende el valor a caer hasta el cierre? Posición **corta**, velas de
 | `iag_intraday_event_study.py` | Estudio de eventos: descarga, señal sin look-ahead, entrada/salida, estadística y figuras. |
 | `fetch_iag_data.py` | Acumulador incremental: descarga los ~60 días de Yahoo y los fusiona sin duplicar en un CSV creciente. |
 | `descargar_60d.py` | Lanzador de un solo paso: descarga 60 días de velas 5m y ejecuta el análisis completo. Requiere red a Yahoo. |
+| `iag_deep_scan.py` | Exploración profunda: ~950 combinaciones de corto intradía (hora/subida fija → hora/objetivo), con prueba out-of-sample anti-sobreajuste y figuras. |
 | `INSTRUCCIONES_IAG_INTRADIA.txt` | Instrucciones de uso. |
 | `VALORACION.md` | **Informe de valoración** de la estrategia (fortalezas, debilidades y recomendaciones). |
 | `tests/synthetic_check.py` | Verificación de la lógica con datos sintéticos (no necesita red). |

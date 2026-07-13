@@ -164,6 +164,46 @@ def make_gap_vs_prevclose_figure(mat: pd.DataFrame, meta: pd.DataFrame, out_dir:
     )
 
 
+def make_spaghetti_figures(mat: pd.DataFrame, out_dir: Path) -> dict:
+    """Dos figuras con TODAS las trayectorias individuales superpuestas:
+    una para días verdes (cierre > apertura) y otra para rojos (cierre < apertura)."""
+    up_cols, down_cols = [], []
+    for c in mat.columns:
+        s = mat[c].dropna()
+        if s.empty:
+            continue
+        (up_cols if s.iloc[-1] > 0 else down_cols).append(c)
+
+    all_min = mat.index.to_numpy()
+    ticks = np.arange((all_min.min() // 30) * 30, all_min.max() + 1, 30)
+
+    for cols, color, nombre, fname in (
+        (up_cols, "green", "verdes (cierre > apertura)", "spaghetti_dias_verdes.png"),
+        (down_cols, "red", "rojos (cierre < apertura)", "spaghetti_dias_rojos.png"),
+    ):
+        if not cols:
+            continue
+        fig, ax = plt.subplots(figsize=(11, 6))
+        for c in cols:
+            ax.plot(mat.index.to_numpy(), mat[c].to_numpy(), color=color,
+                    alpha=0.28, linewidth=0.8)
+        ax.plot(mat.index.to_numpy(), mat[cols].mean(axis=1).to_numpy(),
+                color="black", linewidth=2.5, label="Media")
+        ax.axhline(0, color="gray", linewidth=1)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([hhmm(t) for t in ticks], rotation=45)
+        ax.set_xlabel("Hora (Madrid)")
+        ax.set_ylabel("Cotización respecto a la apertura (%)")
+        ax.set_title(f"Todas las trayectorias de días {nombre}  (N={len(cols)})")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(out_dir / fname, dpi=160)
+        plt.close(fig)
+
+    return {"verdes": len(up_cols), "rojos": len(down_cols)}
+
+
 def make_figure(prof: pd.DataFrame, n_days: int, out_dir: Path) -> tuple[pd.Series, pd.Series]:
     hi = prof.loc[prof["mean_pct"].idxmax()]
     lo = prof.loc[prof["mean_pct"].idxmin()]
@@ -227,6 +267,9 @@ def main() -> int:
             print(f"Abre en positivo: acaba el día a {d2['pos_close'][1]:+.3f}% del cierre anterior")
         if "neg_close" in d2:
             print(f"Abre en negativo: acaba el día a {d2['neg_close'][1]:+.3f}% del cierre anterior")
+        sp = make_spaghetti_figures(mat, Path(args.output))
+        print(f"\n--- Trayectorias superpuestas (espagueti) ---")
+        print(f"Figuras generadas: {sp['verdes']} días verdes y {sp['rojos']} días rojos.")
         print(f"\nResultados en: {Path(args.output).resolve()}")
         return 0
     except Exception as exc:  # noqa: BLE001
